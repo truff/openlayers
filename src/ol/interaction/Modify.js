@@ -95,6 +95,12 @@ const ModifyEventType = {
  */
 
 /**
+ * A function that takes a {@link module:ol/Feature~Feature} and returns
+ * `true` if the feature may be modified or `false` otherwise.
+ * @typedef {function(Feature):boolean} FilterFunction
+ */
+
+/**
  * @typedef {[SegmentData, number]} DragSegment
  */
 
@@ -144,6 +150,8 @@ const ModifyEventType = {
  * @property {Collection<Feature>} [features]
  * The features the interaction works on.  If a feature collection is not
  * provided, a vector source must be provided with the `source` option.
+ * @property {FilterFunction} [filter] A function that takes a {@link module:ol/Feature~Feature}
+ * and returns `true` if the feature may be modified or `false` otherwise.
  * @property {boolean|import("../events/condition.js").Condition} [trace=false] Trace a portion of another geometry.
  * Tracing starts when two neighboring vertices are dragged onto a trace target, without any other modification in between..
  * @property {VectorSource} [traceSource] Source for features to trace.  If tracing is active and a `traceSource` is
@@ -454,6 +462,12 @@ class Modify extends PointerInteraction {
     if (options.hitDetection) {
       this.hitDetection_ = options.hitDetection;
     }
+
+    /**
+     * @private
+     * @type {FilterFunction}
+     */
+    this.filter_ = options.filter ? options.filter : () => true;
 
     /**
      * @type {Collection<Feature>}
@@ -1615,7 +1629,8 @@ class Modify extends PointerInteraction {
             geom &&
             geom.getType() === 'Point' &&
             feature instanceof Feature &&
-            this.features_.getArray().includes(feature)
+            this.features_.getArray().includes(feature) &&
+            this.filter_(feature)
           ) {
             hitPointGeometry = /** @type {Point} */ (geom);
             const coordinate = /** @type {Point} */ (feature.getGeometry())
@@ -1648,84 +1663,88 @@ class Modify extends PointerInteraction {
     }
 
     if (nodes && nodes.length > 0) {
-      const node = nodes.sort(sortByDistance)[0];
-      const closestSegment = node.segment;
-      let vertex = closestOnSegmentData(pixelCoordinate, node, projection);
-      const vertexPixel = map.getPixelFromCoordinate(vertex);
-      let dist = coordinateDistance(pixel, vertexPixel);
-      if (hitPointGeometry || dist <= this.pixelTolerance_) {
-        /** @type {Object<string, boolean>} */
-        const vertexSegments = {};
-        vertexSegments[getUid(closestSegment)] = true;
+      // Filter out nodes for features that don't pass the filter
+      nodes = nodes.filter((node) => this.filter_(node.feature));
+      if (nodes.length > 0) {
+        const node = nodes.sort(sortByDistance)[0];
+        const closestSegment = node.segment;
+        let vertex = closestOnSegmentData(pixelCoordinate, node, projection);
+        const vertexPixel = map.getPixelFromCoordinate(vertex);
+        let dist = coordinateDistance(pixel, vertexPixel);
+        if (hitPointGeometry || dist <= this.pixelTolerance_) {
+          /** @type {Object<string, boolean>} */
+          const vertexSegments = {};
+          vertexSegments[getUid(closestSegment)] = true;
 
-        if (!this.snapToPointer_) {
-          this.delta_[0] = vertex[0] - pixelCoordinate[0];
-          this.delta_[1] = vertex[1] - pixelCoordinate[1];
-        }
-        if (
-          node.geometry.getType() === 'Circle' &&
-          node.index === CIRCLE_CIRCUMFERENCE_INDEX
-        ) {
-          this.snappedToVertex_ = true;
-          this.createOrUpdateVertexFeature_(
-            vertex,
-            [node.feature],
-            [node.geometry],
-            this.snappedToVertex_,
-          );
-        } else {
-          const pixel1 = map.getPixelFromCoordinate(closestSegment[0]);
-          const pixel2 = map.getPixelFromCoordinate(closestSegment[1]);
-          const squaredDist1 = squaredCoordinateDistance(vertexPixel, pixel1);
-          const squaredDist2 = squaredCoordinateDistance(vertexPixel, pixel2);
-          dist = Math.sqrt(Math.min(squaredDist1, squaredDist2));
-          this.snappedToVertex_ = dist <= this.pixelTolerance_;
-          // Stop and cleanup overlay vertex feature if a segment was hit and new vertex creation is not allowed by the insertVertexCondition
+          if (!this.snapToPointer_) {
+            this.delta_[0] = vertex[0] - pixelCoordinate[0];
+            this.delta_[1] = vertex[1] - pixelCoordinate[1];
+          }
           if (
-            !this.snappedToVertex_ &&
-            !this.insertVertexCondition_(this.lastPointerEvent_)
+            node.geometry.getType() === 'Circle' &&
+            node.index === CIRCLE_CIRCUMFERENCE_INDEX
           ) {
-            if (this.vertexFeature_) {
-              this.overlay_.getSource().removeFeature(this.vertexFeature_);
-              this.vertexFeature_ = null;
-            }
-            return;
-          }
-          if (this.snappedToVertex_) {
-            vertex =
-              squaredDist1 > squaredDist2
-                ? closestSegment[1]
-                : closestSegment[0];
-          }
-          this.createOrUpdateVertexFeature_(
-            vertex,
-            [node.feature],
-            [node.geometry],
-            this.snappedToVertex_,
-          );
-          const geometries = {};
-          geometries[getUid(node.geometry)] = true;
-          for (let i = 1, ii = nodes.length; i < ii; ++i) {
-            const segment = nodes[i].segment;
+            this.snappedToVertex_ = true;
+            this.createOrUpdateVertexFeature_(
+              vertex,
+              [node.feature],
+              [node.geometry],
+              this.snappedToVertex_,
+            );
+          } else {
+            const pixel1 = map.getPixelFromCoordinate(closestSegment[0]);
+            const pixel2 = map.getPixelFromCoordinate(closestSegment[1]);
+            const squaredDist1 = squaredCoordinateDistance(vertexPixel, pixel1);
+            const squaredDist2 = squaredCoordinateDistance(vertexPixel, pixel2);
+            dist = Math.sqrt(Math.min(squaredDist1, squaredDist2));
+            this.snappedToVertex_ = dist <= this.pixelTolerance_;
+            // Stop and cleanup overlay vertex feature if a segment was hit and new vertex creation is not allowed by the insertVertexCondition
             if (
-              (coordinatesEqual(closestSegment[0], segment[0]) &&
-                coordinatesEqual(closestSegment[1], segment[1])) ||
-              (coordinatesEqual(closestSegment[0], segment[1]) &&
-                coordinatesEqual(closestSegment[1], segment[0]))
+              !this.snappedToVertex_ &&
+              !this.insertVertexCondition_(this.lastPointerEvent_)
             ) {
-              const geometryUid = getUid(nodes[i].geometry);
-              if (!(geometryUid in geometries)) {
-                geometries[geometryUid] = true;
-                vertexSegments[getUid(segment)] = true;
+              if (this.vertexFeature_) {
+                this.overlay_.getSource().removeFeature(this.vertexFeature_);
+                this.vertexFeature_ = null;
               }
-            } else {
-              break;
+              return;
+            }
+            if (this.snappedToVertex_) {
+              vertex =
+                squaredDist1 > squaredDist2
+                  ? closestSegment[1]
+                  : closestSegment[0];
+            }
+            this.createOrUpdateVertexFeature_(
+              vertex,
+              [node.feature],
+              [node.geometry],
+              this.snappedToVertex_,
+            );
+            const geometries = {};
+            geometries[getUid(node.geometry)] = true;
+            for (let i = 1, ii = nodes.length; i < ii; ++i) {
+              const segment = nodes[i].segment;
+              if (
+                (coordinatesEqual(closestSegment[0], segment[0]) &&
+                  coordinatesEqual(closestSegment[1], segment[1])) ||
+                (coordinatesEqual(closestSegment[0], segment[1]) &&
+                  coordinatesEqual(closestSegment[1], segment[0]))
+              ) {
+                const geometryUid = getUid(nodes[i].geometry);
+                if (!(geometryUid in geometries)) {
+                  geometries[geometryUid] = true;
+                  vertexSegments[getUid(segment)] = true;
+                }
+              } else {
+                break;
+              }
             }
           }
-        }
 
-        this.vertexSegments_ = vertexSegments;
-        return;
+          this.vertexSegments_ = vertexSegments;
+          return;
+        }
       }
     }
     if (this.vertexFeature_) {

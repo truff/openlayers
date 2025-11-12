@@ -1,3 +1,4 @@
+//disable prettier checks
 import {spy as sinonSpy} from 'sinon';
 import Collection from '../../../../../src/ol/Collection.js';
 import Feature from '../../../../../src/ol/Feature.js';
@@ -1604,6 +1605,60 @@ describe('ol.interaction.Modify', function () {
         .transform(userProjection, viewProjection);
       expect(geometry3.getRadius()).to.roughlyEqual(30, 1e-9);
       expect(geometry3.getCenter()).to.eql([5, 5]);
+    });
+  });
+
+  describe('filter option', function () {
+    let firstRevision, modify, lineFeature;
+
+    beforeEach(function () {
+      source.clear();
+      lineFeature = new Feature({
+        geometry: new LineString([
+          [0, 0],
+          [10, 20],
+          [0, 40],
+          [40, 40],
+          [40, 0],
+        ]),
+      });
+      source.addFeature(lineFeature);
+
+      modify = new Modify({
+        source,
+        filter: (feature) => {
+          return feature.get('someProp') !== 'disqualifyingPropValue';
+        },
+      });
+      map.addInteraction(modify);
+    });
+
+    it('allows modification of features that pass the filter', function () {
+      lineFeature.set('someProp', 'allowablePropValue');
+      firstRevision = lineFeature.getGeometry().getRevision();
+
+      // Try to move a vertex
+      simulateEvent('pointermove', 10, -20, null, 0);
+      simulateEvent('pointerdown', 10, -20, null, 0);
+      simulateEvent('pointermove', 5, -20, null, 0);
+      simulateEvent('pointerdrag', 5, -20, null, 0);
+      simulateEvent('pointerup', 5, -20, null, 0);
+      expect(lineFeature.getGeometry().getRevision()).to.be.greaterThan(
+        firstRevision,
+      );
+    });
+
+    it('prevents modification of features that do not pass the filter', function () {
+      lineFeature.set('someProp', 'disqualifyingPropValue');
+      firstRevision = lineFeature.getGeometry().getRevision();
+
+      // Try to move a vertex
+      simulateEvent('pointermove', 10, -20, null, 0);
+      simulateEvent('pointerdown', 10, -20, null, 0);
+      simulateEvent('pointermove', 5, -20, null, 0);
+      simulateEvent('pointerdrag', 5, -20, null, 0);
+      simulateEvent('pointerup', 5, -20, null, 0);
+      expect(lineFeature.getGeometry().getRevision()).to.equal(firstRevision);
     });
   });
 
